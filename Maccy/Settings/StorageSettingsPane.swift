@@ -58,6 +58,10 @@ struct StorageSettingsPane: View {
 
   @Default(.size) private var size
   @Default(.sortBy) private var sortBy
+  @Default(.syncBackendAddress) private var syncBackendAddress
+  @Default(.syncBatchSize) private var syncBatchSize
+  @Default(.syncInterval) private var syncInterval
+  @Default(.syncSecret) private var syncSecret
 
   @State private var viewModel = ViewModel()
   @State private var storageSize = Storage.shared.size
@@ -66,6 +70,20 @@ struct StorageSettingsPane: View {
     let formatter = NumberFormatter()
     formatter.minimum = 1
     formatter.maximum = 999
+    return formatter
+  }()
+
+  private let syncIntervalFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.minimum = 1
+    formatter.maximum = 86_400
+    return formatter
+  }()
+
+  private let syncBatchSizeFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.minimum = 1
+    formatter.maximum = 100
     return formatter
   }()
 
@@ -111,7 +129,10 @@ struct StorageSettingsPane: View {
         }
       }
 
-      Settings.Section(label: { Text("SortBy", tableName: "StorageSettings") }) {
+      Settings.Section(
+        bottomDivider: true,
+        label: { Text("SortBy", tableName: "StorageSettings") }
+      ) {
         Picker("", selection: $sortBy) {
           ForEach(Sorter.By.allCases) { mode in
             Text(mode.description)
@@ -121,6 +142,47 @@ struct StorageSettingsPane: View {
         .frame(width: 160, alignment: .leading)
         .help(Text("SortByTooltip", tableName: "StorageSettings"))
         .accessibilityLabel(Text("SortBy", tableName: "StorageSettings"))
+      }
+
+      Settings.Section(label: { Text("Backend address:", tableName: "StorageSettings") }) {
+        TextField("https://maccy.example.com", text: $syncBackendAddress)
+          .frame(width: 260)
+          .help(Text("Base URL of the clipboard sync server.", tableName: "StorageSettings"))
+          .accessibilityLabel(Text("Backend address", tableName: "StorageSettings"))
+      }
+
+      Settings.Section(label: { Text("Secret:", tableName: "StorageSettings") }) {
+        SecureField("", text: $syncSecret)
+          .frame(width: 260)
+          .help(Text("Bearer secret configured on the server.", tableName: "StorageSettings"))
+          .accessibilityLabel(Text("Secret", tableName: "StorageSettings"))
+          .privacySensitive()
+      }
+
+      Settings.Section(label: { Text("Sync interval:", tableName: "StorageSettings") }) {
+        HStack {
+          TextField("", value: $syncInterval, formatter: syncIntervalFormatter)
+            .frame(width: 80)
+            .help(Text("How often clipboard data is synchronized.", tableName: "StorageSettings"))
+            .accessibilityLabel(Text("Sync interval", tableName: "StorageSettings"))
+          Stepper("", value: $syncInterval, in: 1...86_400)
+            .labelsHidden()
+            .accessibilityLabel(Text("Sync interval", tableName: "StorageSettings"))
+          Text("seconds", tableName: "StorageSettings")
+            .foregroundStyle(.gray)
+        }
+      }
+
+      Settings.Section(label: { Text("Batch size:", tableName: "StorageSettings") }) {
+        HStack {
+          TextField("", value: $syncBatchSize, formatter: syncBatchSizeFormatter)
+            .frame(width: 80)
+            .help(Text("Number of clipboard events sent in each request.", tableName: "StorageSettings"))
+            .accessibilityLabel(Text("Batch size", tableName: "StorageSettings"))
+          Stepper("", value: $syncBatchSize, in: 1...100)
+            .labelsHidden()
+            .accessibilityLabel(Text("Batch size", tableName: "StorageSettings"))
+        }
       }
     }
   }

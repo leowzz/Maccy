@@ -12,3 +12,16 @@
 "FirstCopiedAt" = "Time of first copy";
 "NumberOfCopies" = "Number of copies";
 "SortByTooltip" = "Default: Time of last copy.";
+"Backend address:" = "Backend address:";
+"Backend address" = "Backend address";
+"Base URL of the clipboard sync server." = "Base URL of the clipboard sync server.";
+"Secret:" = "Secret:";
+"Secret" = "Secret";
+"Bearer secret configured on the server." = "Bearer secret configured on the server.";
+"Sync interval:" = "Sync interval:";
+"Sync interval" = "Sync interval";
+"How often clipboard data is synchronized." = "How often clipboard data is synchronized.";
+"seconds" = "seconds";
+"Batch size:" = "Batch size:";
+"Batch size" = "Batch size";
+"Number of clipboard events sent in each request." = "Number of clipboard events sent in each request.";

@@ -12,3 +12,16 @@
 "FirstCopiedAt" = "首次复制时间";
 "NumberOfCopies" = "复制次数";
 "SortByTooltip" = "默认：上次复制时间。";
+"Backend address:" = "后端地址：";
+"Backend address" = "后端地址";
+"Base URL of the clipboard sync server." = "剪贴板同步服务器的基础地址。";
+"Secret:" = "密钥：";
+"Secret" = "密钥";
+"Bearer secret configured on the server." = "服务端配置的 Bearer 密钥。";
+"Sync interval:" = "同步间隔：";
+"Sync interval" = "同步间隔";
+"How often clipboard data is synchronized." = "剪贴板数据的同步频率。";
+"seconds" = "秒";
+"Batch size:" = "批量大小：";
+"Batch size" = "批量大小";
+"Number of clipboard events sent in each request." = "每个请求发送的剪贴板事件数量。";
