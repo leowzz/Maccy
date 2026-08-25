@@ -3,9 +3,3 @@ Maccy.xcodeproj/project.xcworkspace/xcshareddata
 .idea
 .DS_Store
 Maccy/.DS_Store
-server/config.yaml
-server/config.local.yaml
-server/coverage.out
-server/maccy-server
-server/*.test
-server/bin/

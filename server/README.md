@@ -32,10 +32,14 @@ The server reads `config.yaml` by default. Use a different path with `maccy-serv
 ## Run locally
 
 ```sh
-docker compose up --build
+make dev
 ```
 
-The API listens on `http://127.0.0.1:8080`. PostgreSQL listens on `127.0.0.1:54329` for local diagnostics and integration tests.
+This starts the Go server directly on the host using `config.yaml`. The configured PostgreSQL DSN must already be reachable.
+
+The API listens on `http://127.0.0.1:8080`.
+
+For the optional containerized stack, run `docker compose up --build` from this directory.
 
 ```sh
 curl http://127.0.0.1:8080/healthz
@@ -85,4 +89,3 @@ MACCY_TEST_DATABASE_URL='postgres://maccy:maccy@127.0.0.1:54329/maccy?sslmode=di
 ```
 
 The Compose defaults are for localhost development only. Use TLS, strong token secrets, encrypted storage, and a private network for deployment. Never enable HTTP request-body logging because payloads contain clipboard text.
-
