@@ -1,0 +1,12 @@
+server:
+  listen_address: ":8080"
+
+database:
+  dsn: "postgres://maccy:maccy@postgres:5432/maccy?sslmode=disable"
+  max_connections: 20
+
+account_id: "default"
+
+auth:
+  my-macbook: "replace-with-a-long-random-token"
+

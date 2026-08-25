@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: maccy
+      POSTGRES_USER: maccy
+      POSTGRES_PASSWORD: maccy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maccy -d maccy"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - maccy-postgres:/var/lib/postgresql/data
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["-config", "/etc/maccy-server/config.yaml"]
+    volumes:
+      - "./config.yaml:/etc/maccy-server/config.yaml:ro"
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+volumes:
+  maccy-postgres:
