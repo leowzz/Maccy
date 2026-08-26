@@ -138,19 +138,44 @@ func (p *Postgres) Ingest(
 }
 
 func (p *Postgres) ListEntries(ctx context.Context, params ListEntriesParams) ([]Entry, error) {
+	mode := params.Mode
+	if mode == "" {
+		mode = EntrySearchContains
+	}
+
 	query := `
 		SELECT id, content_sha256, plain_text, text_bytes,
-			first_copied_at, last_copied_at, occurrence_count
+			first_copied_at, last_copied_at, occurrence_count,
+	`
+	args := []any{params.AccountID}
+	switch mode {
+	case EntrySearchContains:
+		query += `0::real AS search_score
 		FROM clipboard_entries
 		WHERE account_id = $1
 			AND ($2 = '' OR plain_text ILIKE '%' || $2 || '%' ESCAPE E'\\')
-	`
-	args := []any{params.AccountID, escapeLike(params.Query)}
-	if params.Cursor != nil {
-		query += ` AND (last_copied_at, id) < ($3, $4)`
-		args = append(args, params.Cursor.LastCopiedAt, params.Cursor.ID)
+		`
+		args = append(args, escapeLike(params.Query))
+		if params.Cursor != nil {
+			query += ` AND (last_copied_at, id) < ($3, $4)`
+			args = append(args, params.Cursor.LastCopiedAt, params.Cursor.ID)
+		}
+		query += fmt.Sprintf(" ORDER BY last_copied_at DESC, id DESC LIMIT $%d", len(args)+1)
+	case EntrySearchFuzzy:
+		query += `word_similarity($2, plain_text) AS search_score
+		FROM clipboard_entries
+		WHERE account_id = $1
+			AND $2 <% plain_text
+		`
+		args = append(args, params.Query)
+		if params.Cursor != nil {
+			query += ` AND (word_similarity($2, plain_text), last_copied_at, id) < ($3, $4, $5)`
+			args = append(args, params.Cursor.Score, params.Cursor.LastCopiedAt, params.Cursor.ID)
+		}
+		query += fmt.Sprintf(" ORDER BY word_similarity($2, plain_text) DESC, last_copied_at DESC, id DESC LIMIT $%d", len(args)+1)
+	default:
+		return nil, fmt.Errorf("unsupported entry search mode %q", mode)
 	}
-	query += fmt.Sprintf(" ORDER BY last_copied_at DESC, id DESC LIMIT $%d", len(args)+1)
 	args = append(args, params.Limit)
 
 	rows, err := p.pool.Query(ctx, query, args...)

@@ -27,16 +27,27 @@ type Entry struct {
 	FirstCopiedAt   time.Time `json:"first_copied_at"`
 	LastCopiedAt    time.Time `json:"last_copied_at"`
 	OccurrenceCount int64     `json:"occurrence_count"`
+	Score           float32   `json:"score,omitempty" db:"search_score"`
 }
+
+type EntrySearchMode string
+
+const (
+	EntrySearchContains EntrySearchMode = "contains"
+	EntrySearchFuzzy    EntrySearchMode = "fuzzy"
+)
 
 type EntryCursor struct {
 	LastCopiedAt time.Time
 	ID           string
+	Mode         EntrySearchMode
+	Score        float32
 }
 
 type ListEntriesParams struct {
 	AccountID string
 	Query     string
+	Mode      EntrySearchMode
 	Cursor    *EntryCursor
 	Limit     int
 }

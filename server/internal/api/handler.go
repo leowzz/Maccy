@@ -181,15 +181,29 @@ func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "q must not exceed 256 characters")
 		return
 	}
+	mode, err := searchMode(r.URL.Query().Get("mode"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mode == store.EntrySearchFuzzy && utf8.RuneCountInString(query) < 3 {
+		writeError(w, http.StatusBadRequest, "fuzzy search requires q to contain at least 3 characters")
+		return
+	}
 	cursor, err := decodeCursor(r.URL.Query().Get("cursor"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+	if cursor != nil && cursor.Mode != "" && cursor.Mode != mode {
+		writeError(w, http.StatusBadRequest, "cursor does not match search mode")
 		return
 	}
 
 	entries, err := a.store.ListEntries(r.Context(), store.ListEntriesParams{
 		AccountID: a.accountID,
 		Query:     query,
+		Mode:      mode,
 		Cursor:    cursor,
 		Limit:     limit + 1,
 	})
@@ -203,7 +217,12 @@ func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
 	if len(entries) > limit {
 		last := entries[limit-1]
 		response.Entries = entries[:limit]
-		response.NextCursor = encodeCursor(store.EntryCursor{LastCopiedAt: last.LastCopiedAt, ID: last.ID})
+		response.NextCursor = encodeCursor(store.EntryCursor{
+			LastCopiedAt: last.LastCopiedAt,
+			ID:           last.ID,
+			Mode:         mode,
+			Score:        last.Score,
+		})
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -383,7 +402,12 @@ func pageSize(raw string) (int, error) {
 }
 
 func encodeCursor(cursor store.EntryCursor) string {
-	payload := cursor.LastCopiedAt.UTC().Format(time.RFC3339Nano) + "\n" + cursor.ID
+	mode := cursor.Mode
+	if mode == "" {
+		mode = store.EntrySearchContains
+	}
+	payload := "v2\n" + string(mode) + "\n" + strconv.FormatFloat(float64(cursor.Score), 'g', -1, 32) + "\n" +
+		cursor.LastCopiedAt.UTC().Format(time.RFC3339Nano) + "\n" + cursor.ID
 	return base64.RawURLEncoding.EncodeToString([]byte(payload))
 }
 
@@ -395,15 +419,46 @@ func decodeCursor(raw string) (*store.EntryCursor, error) {
 	if err != nil {
 		return nil, err
 	}
-	parts := strings.SplitN(string(decoded), "\n", 2)
-	if len(parts) != 2 || parts[1] == "" {
+	parts := strings.Split(string(decoded), "\n")
+	if len(parts) == 2 {
+		timestamp, err := time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil || parts[1] == "" {
+			return nil, errors.New("malformed cursor")
+		}
+		return &store.EntryCursor{LastCopiedAt: timestamp, ID: parts[1]}, nil
+	}
+	if len(parts) != 5 || parts[0] != "v2" || parts[1] == "" || parts[4] == "" {
 		return nil, errors.New("malformed cursor")
 	}
-	timestamp, err := time.Parse(time.RFC3339Nano, parts[0])
+	mode := store.EntrySearchMode(parts[1])
+	if mode != store.EntrySearchContains && mode != store.EntrySearchFuzzy {
+		return nil, errors.New("malformed cursor")
+	}
+	score, err := strconv.ParseFloat(parts[2], 32)
+	if err != nil {
+		return nil, errors.New("malformed cursor")
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, parts[3])
 	if err != nil {
 		return nil, err
 	}
-	return &store.EntryCursor{LastCopiedAt: timestamp, ID: parts[1]}, nil
+	return &store.EntryCursor{
+		LastCopiedAt: timestamp,
+		ID:           parts[4],
+		Mode:         mode,
+		Score:        float32(score),
+	}, nil
+}
+
+func searchMode(raw string) (store.EntrySearchMode, error) {
+	switch raw {
+	case "", string(store.EntrySearchContains):
+		return store.EntrySearchContains, nil
+	case string(store.EntrySearchFuzzy):
+		return store.EntrySearchFuzzy, nil
+	default:
+		return "", errors.New("mode must be contains or fuzzy")
+	}
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {

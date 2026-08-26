@@ -74,6 +74,18 @@ func TestPostgresIngestIsIdempotentAndDeduplicatesContent(t *testing.T) {
 	if len(entries) != 1 || entries[0].PlainText != text {
 		t.Fatalf("unexpected search results: %#v", entries)
 	}
+	entries, err = database.ListEntries(ctx, ListEntriesParams{
+		AccountID: accountID,
+		Query:     "clipbord",
+		Mode:      EntrySearchFuzzy,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].PlainText != text || entries[0].Score <= 0 {
+		t.Fatalf("unexpected fuzzy search results: %#v", entries)
+	}
 	events, err := database.ListEvents(ctx, accountID, 0, 10)
 	if err != nil {
 		t.Fatal(err)

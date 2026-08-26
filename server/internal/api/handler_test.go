@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -21,6 +22,8 @@ type fakeRepository struct {
 	ingestResult store.IngestResult
 	ingested     []store.UploadEvent
 	tokenName    string
+	entries      []store.Entry
+	listParams   *store.ListEntriesParams
 }
 
 func (f *fakeRepository) Ping(context.Context) error { return nil }
@@ -35,8 +38,9 @@ func (f *fakeRepository) Ingest(
 	return f.ingestResult, nil
 }
 
-func (f *fakeRepository) ListEntries(context.Context, store.ListEntriesParams) ([]store.Entry, error) {
-	return nil, nil
+func (f *fakeRepository) ListEntries(_ context.Context, params store.ListEntriesParams) ([]store.Entry, error) {
+	f.listParams = &params
+	return f.entries, nil
 }
 
 func (f *fakeRepository) ListEvents(context.Context, string, int64, int) ([]store.Event, error) {
@@ -64,6 +68,59 @@ func TestProtectedEndpointRequiresAuthentication(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", response.Code)
+	}
+}
+
+func TestListEntriesSupportsFuzzyMode(t *testing.T) {
+	repository := &fakeRepository{entries: []store.Entry{{ID: "entry-1", Score: 0.75}}}
+	handler := testHandler(repository)
+	request := httptest.NewRequest(http.MethodGet, "/v1/entries?q=helo&mode=fuzzy&limit=10", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if repository.listParams == nil || repository.listParams.Mode != store.EntrySearchFuzzy {
+		t.Fatalf("unexpected list params: %#v", repository.listParams)
+	}
+	if repository.listParams.Query != "helo" {
+		t.Fatalf("unexpected query: %#v", repository.listParams)
+	}
+	var payload entriesResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Entries) != 1 || payload.Entries[0].Score != 0.75 {
+		t.Fatalf("unexpected fuzzy response: %#v", payload)
+	}
+}
+
+func TestListEntriesRejectsShortFuzzyQuery(t *testing.T) {
+	handler := testHandler(&fakeRepository{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/entries?q=ab&mode=fuzzy", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestListEntriesRejectsUnknownSearchMode(t *testing.T) {
+	handler := testHandler(&fakeRepository{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/entries?q=hello&mode=typo", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -200,14 +257,30 @@ func TestIngestRejectsMismatchedHash(t *testing.T) {
 }
 
 func TestCursorRoundTrip(t *testing.T) {
-	want := store.EntryCursor{LastCopiedAt: time.Now().UTC().Round(0), ID: "entry-1"}
+	want := store.EntryCursor{
+		LastCopiedAt: time.Now().UTC().Round(0),
+		ID:           "entry-1",
+		Mode:         store.EntrySearchFuzzy,
+		Score:        0.8125,
+	}
 	encoded := encodeCursor(want)
 	got, err := decodeCursor(encoded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != want.ID || !got.LastCopiedAt.Equal(want.LastCopiedAt) {
+	if got.ID != want.ID || got.Mode != want.Mode || got.Score != want.Score || !got.LastCopiedAt.Equal(want.LastCopiedAt) {
 		t.Fatalf("cursor mismatch: got %#v want %#v", got, want)
+	}
+}
+
+func TestLegacyCursorStillDecodes(t *testing.T) {
+	legacy := base64.RawURLEncoding.EncodeToString([]byte("2026-08-26T15:04:53Z\nentry-1"))
+	got, err := decodeCursor(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "entry-1" || got.Mode != "" {
+		t.Fatalf("unexpected legacy cursor: %#v", got)
 	}
 }
 

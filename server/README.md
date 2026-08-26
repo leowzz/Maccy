@@ -73,6 +73,10 @@ Retrying the same `(device_id, client_event_id)` is safe. A repeated text with a
 curl -H "Authorization: Bearer replace-with-a-long-random-token" \
   "http://127.0.0.1:8080/v1/entries?limit=50&q=hello"
 
+# Optional trigram-based fuzzy search. Queries shorter than 3 characters are rejected.
+curl -H "Authorization: Bearer replace-with-a-long-random-token" \
+  "http://127.0.0.1:8080/v1/entries?limit=20&q=helo&mode=fuzzy"
+
 curl -H "Authorization: Bearer replace-with-a-long-random-token" \
   "http://127.0.0.1:8080/v1/events?after_seq=0&limit=50"
 ```
