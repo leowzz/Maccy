@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,39 @@ func TestProtectedEndpointRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestRequestLogIncludesPreciseDurationAndResponseMetadata(t *testing.T) {
+	var logs bytes.Buffer
+	handler := New(Config{
+		AccountID: "test-account",
+		Auth:      map[string]string{"test-mac-token": "test-token"},
+		Logger:    slog.New(slog.NewJSONHandler(&logs, nil)),
+	}, &fakeRepository{})
+
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatalf("decode request log: %v; logs=%s", err, logs.String())
+	}
+	if record["msg"] != "request" {
+		t.Fatalf("expected request log, got %#v", record["msg"])
+	}
+	if record["status"] != float64(http.StatusOK) {
+		t.Fatalf("expected status 200, got %#v", record["status"])
+	}
+	if record["response_bytes"] != float64(len(response.Body.Bytes())) {
+		t.Fatalf("unexpected response bytes: %#v", record["response_bytes"])
+	}
+	if _, ok := record["duration_us"]; !ok {
+		t.Fatal("request log is missing duration_us")
+	}
+	if _, ok := record["duration_ms"]; !ok {
+		t.Fatal("request log is missing duration_ms")
+	}
+}
+
 func TestIngestValidatesHashAndPassesEventToStore(t *testing.T) {
 	repository := &fakeRepository{ingestResult: store.IngestResult{Accepted: 1, LastServerSeq: 7}}
 	handler := testHandler(repository)
@@ -91,6 +125,51 @@ func TestIngestValidatesHashAndPassesEventToStore(t *testing.T) {
 	}
 	if payload.Accepted != 1 || payload.LastServerSeq != 7 {
 		t.Fatalf("unexpected response: %#v", payload)
+	}
+}
+
+func TestIngestLogIncludesOutcomeWithoutClipboardText(t *testing.T) {
+	var logs bytes.Buffer
+	handler := New(Config{
+		AccountID: "test-account",
+		Auth:      map[string]string{"test-mac-token": "test-token"},
+		Logger:    slog.New(slog.NewJSONHandler(&logs, nil)),
+	}, &fakeRepository{ingestResult: store.IngestResult{Accepted: 1, Duplicates: 2, LastServerSeq: 7}})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/sync/events:batch", ingestBody(t, "super-secret-clipboard"))
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(logs.String(), "super-secret-clipboard") {
+		t.Fatalf("clipboard text leaked into logs: %s", logs.String())
+	}
+
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log: %v; line=%s", err, line)
+		}
+		if record["msg"] != "ingest completed" {
+			continue
+		}
+		found = true
+		if record["event_count"] != float64(1) || record["accepted"] != float64(1) || record["duplicates"] != float64(2) {
+			t.Fatalf("unexpected ingest outcome: %#v", record)
+		}
+		if _, ok := record["duration_us"]; !ok {
+			t.Fatal("ingest log is missing duration_us")
+		}
+		if _, ok := record["duration_ms"]; !ok {
+			t.Fatal("ingest log is missing duration_ms")
+		}
+	}
+	if !found {
+		t.Fatalf("missing ingest completed log: %s", logs.String())
 	}
 }
 

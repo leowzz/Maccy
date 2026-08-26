@@ -95,7 +95,7 @@ func New(cfg Config, repository store.Repository) http.Handler {
 	mux.Handle("POST /v1/sync/events:batch", api.authenticate(http.HandlerFunc(api.ingest)))
 	mux.Handle("GET /v1/entries", api.authenticate(http.HandlerFunc(api.listEntries)))
 	mux.Handle("GET /v1/events", api.authenticate(http.HandlerFunc(api.listEvents)))
-	return api.recoverPanic(api.logRequests(mux))
+	return api.logRequests(api.recoverPanic(mux))
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +136,33 @@ func (a *API) ingest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "authentication source unavailable")
 		return
 	}
+	ingestStarted := time.Now()
 	result, err := a.store.Ingest(r.Context(), a.accountID, tokenName, request.DeviceID, events)
+	ingestDuration := time.Since(ingestStarted)
 	if err != nil {
-		a.logger.Error("ingest failed", "error", err, "event_count", len(events))
+		a.logger.Error(
+			"ingest failed",
+			"error", err,
+			"event_count", len(events),
+			"device_id", request.DeviceID,
+			"token_name", tokenName,
+			"duration_us", ingestDuration.Microseconds(),
+			"duration_ms", durationMilliseconds(ingestDuration),
+		)
 		writeError(w, http.StatusInternalServerError, "ingest failed")
 		return
 	}
+	a.logger.Info(
+		"ingest completed",
+		"event_count", len(events),
+		"accepted", result.Accepted,
+		"duplicates", result.Duplicates,
+		"last_server_seq", result.LastServerSeq,
+		"device_id", request.DeviceID,
+		"token_name", tokenName,
+		"duration_us", ingestDuration.Microseconds(),
+		"duration_ms", durationMilliseconds(ingestDuration),
+	)
 	writeJSON(w, http.StatusOK, ingestResponse{
 		Accepted:      result.Accepted,
 		Duplicates:    result.Duplicates,
@@ -247,9 +268,53 @@ type tokenNameContextKey struct{}
 func (a *API) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		next.ServeHTTP(w, r)
-		a.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
+		recorder := &responseRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		duration := time.Since(started)
+		a.logger.Info(
+			"request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", recorder.statusCode(),
+			"response_bytes", recorder.bytes,
+			"duration_us", duration.Microseconds(),
+			"duration_ms", durationMilliseconds(duration),
+		)
 	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	count, err := r.ResponseWriter.Write(data)
+	r.bytes += count
+	return count, err
+}
+
+func (r *responseRecorder) statusCode() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
+}
+
+func durationMilliseconds(duration time.Duration) float64 {
+	return float64(duration.Microseconds()) / 1000
 }
 
 func (a *API) recoverPanic(next http.Handler) http.Handler {

@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/maccy-server ./cmd/server
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/maccy-server /usr/local/bin/maccy-server
 USER 65532:65532
 EXPOSE 8080
