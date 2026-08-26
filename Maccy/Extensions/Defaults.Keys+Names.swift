@@ -72,6 +72,7 @@ extension Defaults.Keys {
   static let suppressClearAlert = Key<Bool>("suppressClearAlert", default: false, suite: preferencesSuite)
   static let syncBackendAddress = Key<String>("syncBackendAddress", default: "", suite: preferencesSuite)
   static let syncBatchSize = Key<Int>("syncBatchSize", default: 50, suite: preferencesSuite)
+  static let syncDeviceID = Key<String>("syncDeviceID", default: "", suite: preferencesSuite)
   static let syncInterval = Key<Int>("syncInterval", default: 60, suite: preferencesSuite)
   static let syncSecret = Key<String>("syncSecret", default: "", suite: preferencesSuite)
   static let windowSize = Key<NSSize>("windowSize", default: NSSize(width: 450, height: 800), suite: preferencesSuite)

@@ -50,12 +50,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Bridge FloatingPanel via AppDelegate.
     AppState.shared.appDelegate = self
 
-    Clipboard.shared.onNewCopy { History.shared.add($0) }
+    Clipboard.shared.onNewCopy {
+      ClipboardSync.shared.enqueue($0)
+      History.shared.add($0)
+    }
     Clipboard.shared.start()
+    ClipboardSync.shared.start()
 
     Task {
       for await _ in Defaults.updates(.clipboardCheckInterval, initial: false) {
         Clipboard.shared.restart()
+      }
+    }
+
+    Task {
+      for await _ in Defaults.updates(.syncInterval, initial: false) {
+        ClipboardSync.shared.restart()
+      }
+    }
+
+    Task {
+      for await _ in Defaults.updates(.syncBackendAddress, initial: false) {
+        ClipboardSync.shared.restart()
+      }
+    }
+
+    Task {
+      for await _ in Defaults.updates(.syncSecret, initial: false) {
+        ClipboardSync.shared.restart()
       }
     }
 
@@ -125,6 +147,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    ClipboardSync.shared.stop()
     if Defaults[.clearOnQuit] {
       AppState.shared.history.clear()
     }
