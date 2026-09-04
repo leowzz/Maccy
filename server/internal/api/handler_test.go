@@ -74,6 +74,24 @@ func TestHealthDoesNotRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestHealthTreatsTypedNilHybridAsDisabled(t *testing.T) {
+	var searcher *fakeHybridSearcher
+	handler := New(Config{
+		AccountID: "test-account",
+		Auth:      map[string]string{"test-mac-token": "test-token"},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Hybrid:    searcher,
+	}, &fakeRepository{})
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestProtectedEndpointRequiresAuthentication(t *testing.T) {
 	handler := testHandler(&fakeRepository{})
 	request := httptest.NewRequest(http.MethodGet, "/v1/entries", nil)

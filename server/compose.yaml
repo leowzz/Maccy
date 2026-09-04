@@ -1,7 +1,7 @@
 services:
   api:
     build: .
-    image: registry.cn-heyuan.aliyuncs.com/leo03w/maccy-server:v0.1.0
+    image: registry.cn-heyuan.aliyuncs.com/leo03w/maccy-server:${version:-latest}
     environment:
       TZ: Asia/Shanghai
     command: ["-config", "/etc/maccy-server/config.yaml"]

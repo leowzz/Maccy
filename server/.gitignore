@@ -5,3 +5,4 @@ maccy-server
 bin/
 node_modules/
 .zvec/
+.env

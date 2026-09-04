@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -93,12 +94,16 @@ func New(cfg Config, repository store.Repository) http.Handler {
 	for name, secret := range cfg.Auth {
 		auth = append(auth, authToken{name: name, secretHash: sha256.Sum256([]byte(secret))})
 	}
+	hybrid := cfg.Hybrid
+	if isNilHybrid(hybrid) {
+		hybrid = nil
+	}
 	api := &API{
 		accountID: cfg.AccountID,
 		auth:      auth,
 		logger:    cfg.Logger,
 		store:     repository,
-		hybrid:    cfg.Hybrid,
+		hybrid:    hybrid,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
@@ -106,6 +111,19 @@ func New(cfg Config, repository store.Repository) http.Handler {
 	mux.Handle("GET /v1/entries", api.authenticate(http.HandlerFunc(api.listEntries)))
 	mux.Handle("GET /v1/events", api.authenticate(http.HandlerFunc(api.listEvents)))
 	return api.logRequests(api.recoverPanic(mux))
+}
+
+func isNilHybrid(searcher HybridSearcher) bool {
+	if searcher == nil {
+		return true
+	}
+	value := reflect.ValueOf(searcher)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
