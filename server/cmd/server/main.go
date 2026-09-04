@@ -13,6 +13,7 @@ import (
 
 	"maccy-server/internal/api"
 	"maccy-server/internal/config"
+	"maccy-server/internal/hybrid"
 	"maccy-server/internal/store"
 )
 
@@ -42,10 +43,35 @@ func main() {
 		os.Exit(1)
 	}
 
+	var hybridSearcher *hybrid.Process
+	if cfg.Zvec.Enabled {
+		hybridSearcher, err = hybrid.Start(ctx, hybrid.Config{
+			NodePath:        cfg.Zvec.NodePath,
+			WorkerPath:      cfg.Zvec.WorkerPath,
+			CollectionPath:  cfg.Zvec.CollectionPath,
+			ModelCachePath:  cfg.Zvec.ModelCachePath,
+			FTSTokenizer:    cfg.Zvec.FTSTokenizer,
+			RRFRankConstant: cfg.Zvec.RRFRankConstant,
+		})
+		if err != nil {
+			logger.Error("open zvec", "error", err)
+			os.Exit(1)
+		}
+		defer hybridSearcher.Close()
+		indexed, err := hybrid.Sync(ctx, database, hybridSearcher, cfg.AccountID, cfg.Zvec.SyncBatchSize)
+		if err != nil {
+			_ = hybridSearcher.Close()
+			logger.Error("sync zvec", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("zvec ready", "model", "local/potion-code-16m-v2", "entries_scanned", indexed)
+	}
+
 	handler := api.New(api.Config{
 		AccountID: cfg.AccountID,
 		Auth:      cfg.Auth,
 		Logger:    logger,
+		Hybrid:    hybridSearcher,
 	}, database)
 	server := &http.Server{
 		Addr:              cfg.Server.ListenAddress,

@@ -23,11 +23,25 @@ account_id: "default"
 auth:
   my-macbook: "replace-with-a-long-random-token"
   work-mac: "another-long-random-token"
+
+zvec:
+  enabled: true
+  node_path: "node"
+  worker_path: "zvec_worker.mjs"
+  collection_path: ".zvec/clipboard"
+  model_cache_path: ".zvec/models"
+  fts_tokenizer: "jieba"
+  rrf_rank_constant: 60
+  sync_batch_size: 20
 ```
 
 The keys under `auth` are token names and the values are static bearer secrets. Secrets must be unique. The server resolves each bearer secret to its token name and stores only the token name on every clipboard event. Secrets are never stored in PostgreSQL or written to logs.
 
 The server reads `config.yaml` by default. Use a different path with `maccy-server -config /path/to/config.yaml`.
+
+Zvec search is optional and disabled by default. When enabled, install the Node dependencies with `npm install`. The worker uses the fixed local embedding model `local/potion-code-16m-v2`; clipboard text is embedded on the server and is not sent to a remote embedding API. The first start downloads the model files into `model_cache_path`, while later starts reuse that cache.
+
+PostgreSQL remains the source of truth. At startup the server scans existing entries and adds only IDs missing from the Zvec collection. New ingests update PostgreSQL first and then Zvec; an indexing failure returns HTTP 503, and retrying the same event safely completes the index update. Keep `collection_path` and `model_cache_path` on persistent storage. The included Compose file persists both under the `maccy-zvec-data` volume.
 
 ## Run locally
 
@@ -77,16 +91,22 @@ curl -H "Authorization: Bearer replace-with-a-long-random-token" \
 curl -H "Authorization: Bearer replace-with-a-long-random-token" \
   "http://127.0.0.1:8080/v1/entries?limit=20&q=helo&mode=fuzzy"
 
+# Optional Zvec BM25 + vector search, fused with reciprocal rank fusion.
+curl -H "Authorization: Bearer replace-with-a-long-random-token" \
+  "http://127.0.0.1:8080/v1/entries?limit=20&q=local%20semantic%20search&mode=hybrid"
+
 curl -H "Authorization: Bearer replace-with-a-long-random-token" \
   "http://127.0.0.1:8080/v1/events?after_seq=0&limit=50"
 ```
 
-Use `next_cursor` from the entries response for the next page. Use `last_server_seq` from the events response for incremental synchronization. Event responses include `token_name`, which identifies the static token that wrote the event.
+Use `next_cursor` from the entries response for the next page. Hybrid cursors use offset pagination over the current index ranking, so adding entries between pages can change the remaining order. Use `last_server_seq` from the events response for incremental synchronization. Event responses include `token_name`, which identifies the static token that wrote the event.
+
+The collection metadata records the embedding model, dimension, metric, and tokenizer. If one of those settings changes, startup fails instead of opening an incompatible index. Stop the server, remove the configured collection directory and its adjacent `.maccy.json` metadata file, then restart to rebuild it from PostgreSQL.
 
 ## Tests
 
 ```sh
-go test ./...
+make test
 
 MACCY_TEST_DATABASE_URL='postgres://maccy:maccy@127.0.0.1:54329/maccy?sslmode=disable' \
   go test ./internal/store -run TestPostgres

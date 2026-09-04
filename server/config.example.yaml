@@ -10,3 +10,12 @@ account_id: "default"
 auth:
   my-macbook: "replace-with-a-long-random-token"
 
+zvec:
+  enabled: false
+  node_path: "node"
+  worker_path: "zvec_worker.mjs"
+  collection_path: ".zvec/clipboard"
+  model_cache_path: ".zvec/models"
+  fts_tokenizer: "jieba"
+  rrf_rank_constant: 60
+  sync_batch_size: 20

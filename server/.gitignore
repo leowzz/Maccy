@@ -3,3 +3,5 @@ coverage.out
 maccy-server
 *.test
 bin/
+node_modules/
+.zvec/

@@ -1,0 +1,12 @@
+{
+  "name": "maccy-server-zvec-worker",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@zvec/zvec": "0.7.0",
+    "@zvec/zvec-grep": "0.2.1"
+  }
+}

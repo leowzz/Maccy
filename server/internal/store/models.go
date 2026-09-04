@@ -17,6 +17,17 @@ type IngestResult struct {
 	Accepted      int
 	Duplicates    int
 	LastServerSeq int64
+	IndexEntries  []IndexEntry
+}
+
+type IndexEntry struct {
+	ID        string `json:"id"`
+	PlainText string `json:"plain_text"`
+}
+
+type RankedEntry struct {
+	ID    string  `json:"id"`
+	Score float32 `json:"score"`
 }
 
 type Entry struct {
@@ -35,6 +46,7 @@ type EntrySearchMode string
 const (
 	EntrySearchContains EntrySearchMode = "contains"
 	EntrySearchFuzzy    EntrySearchMode = "fuzzy"
+	EntrySearchHybrid   EntrySearchMode = "hybrid"
 )
 
 type EntryCursor struct {
@@ -42,6 +54,7 @@ type EntryCursor struct {
 	ID           string
 	Mode         EntrySearchMode
 	Score        float32
+	Offset       int
 }
 
 type ListEntriesParams struct {
@@ -69,5 +82,7 @@ type Repository interface {
 	Ping(context.Context) error
 	Ingest(context.Context, string, string, string, []UploadEvent) (IngestResult, error)
 	ListEntries(context.Context, ListEntriesParams) ([]Entry, error)
+	ListIndexEntries(context.Context, string, string, int) ([]IndexEntry, error)
+	EntriesByRank(context.Context, string, []RankedEntry) ([]Entry, error)
 	ListEvents(context.Context, string, int64, int) ([]Event, error)
 }

@@ -56,12 +56,31 @@ func TestPostgresIngestIsIdempotentAndDeduplicatesContent(t *testing.T) {
 	if first.Accepted != 1 || second.Duplicates != 1 || third.Accepted != 1 {
 		t.Fatalf("unexpected ingest results: first=%#v second=%#v third=%#v", first, second, third)
 	}
+	for name, result := range map[string]IngestResult{"first": first, "second": second, "third": third} {
+		if len(result.IndexEntries) != 1 || result.IndexEntries[0].PlainText != text {
+			t.Fatalf("unexpected %s index entries: %#v", name, result.IndexEntries)
+		}
+	}
 	entries, err := database.ListEntries(ctx, ListEntriesParams{AccountID: accountID, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 || entries[0].OccurrenceCount != 2 {
 		t.Fatalf("unexpected entries: %#v", entries)
+	}
+	indexEntries, err := database.ListIndexEntries(ctx, accountID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(indexEntries) != 1 || indexEntries[0].ID != entries[0].ID || indexEntries[0].PlainText != text {
+		t.Fatalf("unexpected entries for indexing: %#v", indexEntries)
+	}
+	rankedEntries, err := database.EntriesByRank(ctx, accountID, []RankedEntry{{ID: entries[0].ID, Score: 0.75}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rankedEntries) != 1 || rankedEntries[0].ID != entries[0].ID || rankedEntries[0].Score != 0.75 {
+		t.Fatalf("unexpected ranked entries: %#v", rankedEntries)
 	}
 	entries, err = database.ListEntries(ctx, ListEntriesParams{
 		AccountID: accountID,
