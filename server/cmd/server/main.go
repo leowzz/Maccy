@@ -14,6 +14,7 @@ import (
 	"maccy-server/internal/api"
 	"maccy-server/internal/config"
 	"maccy-server/internal/hybrid"
+	"maccy-server/internal/potion"
 	"maccy-server/internal/store"
 )
 
@@ -43,13 +44,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	var hybridSearcher *hybrid.Process
+	var hybridSearcher *hybrid.Store
 	if cfg.Zvec.Enabled {
-		hybridSearcher, err = hybrid.Start(ctx, hybrid.Config{
-			NodePath:        cfg.Zvec.NodePath,
-			WorkerPath:      cfg.Zvec.WorkerPath,
+		embedder, err := potion.Open(ctx, cfg.Zvec.ModelCachePath)
+		if err != nil {
+			logger.Error("open potion embedding model", "error", err)
+			os.Exit(1)
+		}
+		hybridSearcher, err = hybrid.NewStore(ctx, hybrid.Config{
 			CollectionPath:  cfg.Zvec.CollectionPath,
-			ModelCachePath:  cfg.Zvec.ModelCachePath,
+			Embedder:        embedder,
+			JiebaDictPath:   cfg.Zvec.JiebaDictPath,
 			FTSTokenizer:    cfg.Zvec.FTSTokenizer,
 			RRFRankConstant: cfg.Zvec.RRFRankConstant,
 		})

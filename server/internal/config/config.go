@@ -13,8 +13,6 @@ const (
 	defaultListenAddress          = ":8080"
 	defaultAccountID              = "default"
 	defaultDatabaseMaxConnections = int32(20)
-	defaultZvecNodePath           = "node"
-	defaultZvecWorkerPath         = "zvec_worker.mjs"
 	defaultZvecCollectionPath     = ".zvec/clipboard"
 	defaultZvecModelCachePath     = ".zvec/models"
 	defaultZvecFTSTokenizer       = "jieba"
@@ -41,10 +39,9 @@ type DatabaseConfig struct {
 
 type ZvecConfig struct {
 	Enabled         bool   `yaml:"enabled"`
-	NodePath        string `yaml:"node_path"`
-	WorkerPath      string `yaml:"worker_path"`
 	CollectionPath  string `yaml:"collection_path"`
 	ModelCachePath  string `yaml:"model_cache_path"`
+	JiebaDictPath   string `yaml:"jieba_dict_path"`
 	FTSTokenizer    string `yaml:"fts_tokenizer"`
 	RRFRankConstant int    `yaml:"rrf_rank_constant"`
 	SyncBatchSize   int    `yaml:"sync_batch_size"`
@@ -117,14 +114,6 @@ func Load(path string) (Config, error) {
 }
 
 func applyZvecDefaults(config *ZvecConfig) {
-	config.NodePath = strings.TrimSpace(config.NodePath)
-	if config.NodePath == "" {
-		config.NodePath = defaultZvecNodePath
-	}
-	config.WorkerPath = strings.TrimSpace(config.WorkerPath)
-	if config.WorkerPath == "" {
-		config.WorkerPath = defaultZvecWorkerPath
-	}
 	config.CollectionPath = strings.TrimSpace(config.CollectionPath)
 	if config.CollectionPath == "" {
 		config.CollectionPath = defaultZvecCollectionPath
@@ -133,6 +122,7 @@ func applyZvecDefaults(config *ZvecConfig) {
 	if config.ModelCachePath == "" {
 		config.ModelCachePath = defaultZvecModelCachePath
 	}
+	config.JiebaDictPath = strings.TrimSpace(config.JiebaDictPath)
 	config.FTSTokenizer = strings.TrimSpace(config.FTSTokenizer)
 	if config.FTSTokenizer == "" {
 		config.FTSTokenizer = defaultZvecFTSTokenizer
@@ -149,8 +139,8 @@ func validateZvec(config ZvecConfig) error {
 	if !config.Enabled {
 		return nil
 	}
-	if config.NodePath == "" || config.WorkerPath == "" || config.CollectionPath == "" || config.ModelCachePath == "" {
-		return errors.New("zvec node, worker, collection, and model cache paths are required")
+	if config.CollectionPath == "" || config.ModelCachePath == "" {
+		return errors.New("zvec collection and model cache paths are required")
 	}
 	switch config.FTSTokenizer {
 	case "standard", "whitespace", "jieba":

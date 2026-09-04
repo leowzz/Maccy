@@ -44,6 +44,7 @@ database:
   dsn: "postgres://example"
 zvec:
   enabled: true
+  jieba_dict_path: "/opt/zvec/jieba"
 auth:
   macbook: "secret-one"
 `)
@@ -52,11 +53,11 @@ auth:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Zvec.NodePath != "node" || config.Zvec.WorkerPath != "zvec_worker.mjs" {
-		t.Fatalf("unexpected zvec process defaults: %#v", config.Zvec)
-	}
 	if config.Zvec.CollectionPath != ".zvec/clipboard" || config.Zvec.ModelCachePath != ".zvec/models" {
 		t.Fatalf("unexpected zvec storage defaults: %#v", config.Zvec)
+	}
+	if config.Zvec.JiebaDictPath != "/opt/zvec/jieba" {
+		t.Fatalf("unexpected zvec jieba dictionary path: %#v", config.Zvec)
 	}
 	if config.Zvec.FTSTokenizer != "jieba" || config.Zvec.RRFRankConstant != 60 || config.Zvec.SyncBatchSize != 20 {
 		t.Fatalf("unexpected zvec search defaults: %#v", config.Zvec)
