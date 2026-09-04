@@ -275,6 +275,53 @@ func TestRequestLogIncludesPreciseDurationAndResponseMetadata(t *testing.T) {
 	}
 }
 
+func TestHybridSearchLogsModeBackendAndPhaseTimings(t *testing.T) {
+	var logs bytes.Buffer
+	searcher := &fakeHybridSearcher{results: []store.RankedEntry{{ID: "entry-1", Score: 0.8}}}
+	handler := New(Config{
+		AccountID: "test-account",
+		Auth:      map[string]string{"test-mac-token": "test-token"},
+		Logger:    slog.New(slog.NewJSONHandler(&logs, nil)),
+		Hybrid:    searcher,
+	}, &fakeRepository{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/entries?q=semantic&mode=hybrid&limit=2", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	var requestLog, completedLog map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log %q: %v", line, err)
+		}
+		switch record["msg"] {
+		case "request":
+			requestLog = record
+		case "entry search completed":
+			completedLog = record
+		}
+	}
+	if requestLog["search_mode"] != "hybrid" || requestLog["query_chars"] != float64(len("semantic")) {
+		t.Fatalf("unexpected request search fields: %#v", requestLog)
+	}
+	if completedLog["search_mode"] != "hybrid" || completedLog["search_backend"] != "zvec+postgres" {
+		t.Fatalf("unexpected completed search fields: %#v", completedLog)
+	}
+	if completedLog["candidate_count"] != float64(1) || completedLog["returned_count"] != float64(1) {
+		t.Fatalf("unexpected search counts: %#v", completedLog)
+	}
+	if _, ok := completedLog["search_duration_us"]; !ok {
+		t.Fatalf("completed log is missing search duration: %#v", completedLog)
+	}
+	if _, ok := completedLog["hydrate_duration_us"]; !ok {
+		t.Fatalf("completed log is missing hydration duration: %#v", completedLog)
+	}
+}
+
 func TestIngestValidatesHashAndPassesEventToStore(t *testing.T) {
 	repository := &fakeRepository{ingestResult: store.IngestResult{Accepted: 1, LastServerSeq: 7}}
 	handler := testHandler(repository)

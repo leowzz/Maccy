@@ -219,6 +219,7 @@ func (a *API) ingest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
+	searchStarted := time.Now()
 	limit, err := pageSize(r.URL.Query().Get("limit"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -264,7 +265,14 @@ func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
 		Limit:     limit + 1,
 	})
 	if err != nil {
-		a.logger.Error("list entries failed", "error", err)
+		a.logger.Error(
+			"entry search failed",
+			"search_mode", string(mode),
+			"search_backend", "postgres",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"error", err,
+		)
 		writeError(w, http.StatusInternalServerError, "list entries failed")
 		return
 	}
@@ -280,6 +288,18 @@ func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
 			Score:        last.Score,
 		})
 	}
+	searchDuration := time.Since(searchStarted)
+	a.logger.Info(
+		"entry search completed",
+		"search_mode", string(mode),
+		"search_backend", "postgres",
+		"query_chars", utf8.RuneCountInString(query),
+		"limit", limit,
+		"returned_count", len(response.Entries),
+		"has_next_cursor", response.NextCursor != "",
+		"search_duration_us", searchDuration.Microseconds(),
+		"search_duration_ms", durationMilliseconds(searchDuration),
+	)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -291,6 +311,11 @@ func (a *API) listHybridEntries(
 	cursor *store.EntryCursor,
 ) {
 	if a.hybrid == nil {
+		a.logger.Warn(
+			"entry search unavailable",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "zvec",
+		)
 		writeError(w, http.StatusServiceUnavailable, "hybrid search is unavailable")
 		return
 	}
@@ -298,20 +323,59 @@ func (a *API) listHybridEntries(
 	if cursor != nil {
 		offset = cursor.Offset
 	}
+	searchStarted := time.Now()
 	ranked, err := a.hybrid.Search(r.Context(), query, offset+limit+1)
+	searchDuration := time.Since(searchStarted)
 	if err != nil {
-		a.logger.Error("hybrid search failed", "error", err)
+		a.logger.Error(
+			"entry search failed",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "zvec",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"offset", offset,
+			"search_duration_us", searchDuration.Microseconds(),
+			"search_duration_ms", durationMilliseconds(searchDuration),
+			"error", err,
+		)
 		writeError(w, http.StatusServiceUnavailable, "hybrid search failed")
 		return
 	}
 	if offset >= len(ranked) {
+		a.logger.Info(
+			"entry search completed",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "zvec",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"offset", offset,
+			"candidate_count", len(ranked),
+			"returned_count", 0,
+			"has_next_cursor", false,
+			"search_duration_us", searchDuration.Microseconds(),
+			"search_duration_ms", durationMilliseconds(searchDuration),
+		)
 		writeJSON(w, http.StatusOK, entriesResponse{Entries: []store.Entry{}})
 		return
 	}
 	end := min(offset+limit, len(ranked))
+	hydrateStarted := time.Now()
 	entries, err := a.store.EntriesByRank(r.Context(), a.accountID, ranked[offset:end])
+	hydrateDuration := time.Since(hydrateStarted)
 	if err != nil {
-		a.logger.Error("hydrate hybrid search results failed", "error", err)
+		a.logger.Error(
+			"entry search hydration failed",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "postgres",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"offset", offset,
+			"candidate_count", len(ranked),
+			"hydrate_count", end-offset,
+			"hydrate_duration_us", hydrateDuration.Microseconds(),
+			"hydrate_duration_ms", durationMilliseconds(hydrateDuration),
+			"error", err,
+		)
 		writeError(w, http.StatusInternalServerError, "list entries failed")
 		return
 	}
@@ -322,6 +386,21 @@ func (a *API) listHybridEntries(
 			Offset: end,
 		})
 	}
+	a.logger.Info(
+		"entry search completed",
+		"search_mode", string(store.EntrySearchHybrid),
+		"search_backend", "zvec+postgres",
+		"query_chars", utf8.RuneCountInString(query),
+		"limit", limit,
+		"offset", offset,
+		"candidate_count", len(ranked),
+		"returned_count", len(response.Entries),
+		"has_next_cursor", response.NextCursor != "",
+		"search_duration_us", searchDuration.Microseconds(),
+		"search_duration_ms", durationMilliseconds(searchDuration),
+		"hydrate_duration_us", hydrateDuration.Microseconds(),
+		"hydrate_duration_ms", durationMilliseconds(hydrateDuration),
+	)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -388,15 +467,26 @@ func (a *API) logRequests(next http.Handler) http.Handler {
 		recorder := &responseRecorder{ResponseWriter: w}
 		next.ServeHTTP(recorder, r)
 		duration := time.Since(started)
-		a.logger.Info(
-			"request",
+		fields := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", recorder.statusCode(),
 			"response_bytes", recorder.bytes,
 			"duration_us", duration.Microseconds(),
 			"duration_ms", durationMilliseconds(duration),
-		)
+		}
+		if r.URL.Path == "/v1/entries" {
+			mode, err := searchMode(r.URL.Query().Get("mode"))
+			if err != nil {
+				fields = append(fields, "search_mode", "invalid")
+			} else {
+				fields = append(fields,
+					"search_mode", string(mode),
+					"query_chars", utf8.RuneCountInString(r.URL.Query().Get("q")),
+				)
+			}
+		}
+		a.logger.Info("request", fields...)
 	})
 }
 
