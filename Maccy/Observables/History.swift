@@ -145,6 +145,11 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
     var removedItemIndex: Int?
     if let existingHistoryItem = findSimilarItem(item) {
+      removedItemIndex = all.firstIndex(where: { $0.item == existingHistoryItem })
+      if let removedItemIndex {
+        cleanup(all[removedItemIndex])
+      }
+      sessionLog = sessionLog.mapValues { $0 == existingHistoryItem ? item : $0 }
       if isModified(item) == nil {
         transferContents(from: existingHistoryItem, to: item)
       }
@@ -156,10 +161,6 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
         item.application = existingHistoryItem.application
       }
       logger.info("Removing duplicate item '\(item.title)'")
-      removedItemIndex = all.firstIndex(where: { $0.item == existingHistoryItem })
-      if let removedItemIndex {
-        cleanup(all[removedItemIndex])
-      }
       deleteFromStorage(existingHistoryItem)
       if let removedItemIndex {
         all.remove(at: removedItemIndex)
@@ -192,11 +193,11 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
         all.insert(itemDecorator, at: index)
       }
 
-      items = all
-      updateUnpinnedShortcuts()
-      AppState.shared.popup.needsResize = true
     }
 
+    items = all
+    updateUnpinnedShortcuts()
+    AppState.shared.popup.needsResize = true
     return itemDecorator
   }
 
@@ -283,18 +284,17 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
   @MainActor
   func delete(_ item: HistoryItemDecorator?) {
-    guard let item else { return }
+    guard let item, !item.isInvalidated else { return }
 
+    all.removeAll { $0 == item }
+    items.removeAll { $0 == item }
+    sessionLog.removeValues { $0 == item.item }
     cleanup(item)
     withLogging("Removing history item") {
       deleteFromStorage(item.item)
       Storage.shared.context.processPendingChanges()
       try? Storage.shared.context.save()
     }
-
-    all.removeAll { $0 == item }
-    items.removeAll { $0 == item }
-    sessionLog.removeValues { $0 == item.item }
 
     updateUnpinnedShortcuts()
     Task {
@@ -317,17 +317,19 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
   @MainActor
   private func deleteContents(of item: HistoryItem) {
-    item.contents.forEach(Storage.shared.context.delete)
+    let contents = item.contents
+    item.contents = []
+    contents.forEach(Storage.shared.context.delete)
   }
 
   @MainActor
   private func cleanup(_ item: HistoryItemDecorator) {
-    item.cleanupImages()
+    item.invalidate()
   }
 
   @MainActor
   func select(_ item: HistoryItemDecorator?, flags modifierFlags: NSEvent.ModifierFlags) {
-    guard let item else {
+    guard let item, !item.isInvalidated else {
       return
     }
 
@@ -448,7 +450,7 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
   @MainActor
   func togglePin(_ item: HistoryItemDecorator?) {
-    guard let item else { return }
+    guard let item, !item.isInvalidated else { return }
 
     item.togglePin()
 

@@ -314,6 +314,55 @@ class HistoryTests: XCTestCase { // swiftlint:disable:this type_body_length
     try assertStorageCounts(items: 1, contents: 1)
   }
 
+  func testRemovedRowCanStillRenderAfterSave() async throws {
+    let removed = history.add(historyItem("removed"))
+    // Queue the same observation callback that a final SwiftUI render may race with.
+    removed.item.title = "updated"
+    history.delete(removed)
+    try assertStorageCounts(items: 0, contents: 0)
+    await Task.yield()
+
+    XCTAssertTrue(removed.isInvalidated)
+    XCTAssertFalse(removed.hasImage)
+    XCTAssertNil(removed.application)
+    XCTAssertFalse(removed.isPinned)
+    XCTAssertEqual(removed.accessibilityLabel, removed.title)
+    XCTAssertEqual(removed.previewText, removed.title)
+    removed.ensureThumbnailImage()
+    let preview = await removed.asyncGetPreviewImage()
+    XCTAssertNil(preview)
+    removed.togglePin()
+    history.delete(removed)
+    try assertStorageCounts(items: 0, contents: 0)
+  }
+
+  func testPinnedDuplicateReplacesVisibleRow() throws {
+    let original = history.add(historyItem("pinned"))
+    original.togglePin()
+    let replacement = history.add(historyItem("pinned"))
+    try assertStorageCounts(items: 1, contents: 1)
+
+    XCTAssertEqual(history.items, [replacement])
+    XCTAssertTrue(original.isInvalidated)
+    XCTAssertEqual(original.accessibilityLabel, original.title)
+    XCTAssertEqual(replacement.text, "pinned")
+    XCTAssertTrue(replacement.isPinned)
+  }
+
+  func testClearedAndEvictedRowsCanStillRender() throws {
+    Defaults[.size] = 1
+    let evicted = history.add(historyItem("evicted"))
+    let cleared = history.add(historyItem("cleared"))
+    history.clear()
+    try assertStorageCounts(items: 0, contents: 0)
+
+    for removed in [evicted, cleared] {
+      XCTAssertTrue(removed.isInvalidated)
+      XCTAssertEqual(removed.accessibilityLabel, removed.title)
+      XCTAssertFalse(removed.hasImage)
+    }
+  }
+
   func testCleaningUpOrphanedContents() throws {
     let live = history.add(historyItem("live"))
     let liveContent = live.item.contents[0]

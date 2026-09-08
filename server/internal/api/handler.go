@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -26,12 +27,20 @@ const (
 	maxBatchSize    = 100
 	defaultPageSize = 50
 	maxPageSize     = 200
+	maxHybridOffset = 10000
 )
+
+type HybridSearcher interface {
+	Ping(context.Context) error
+	Upsert(context.Context, []store.IndexEntry) error
+	Search(context.Context, string, int) ([]store.RankedEntry, error)
+}
 
 type Config struct {
 	AccountID string
 	Auth      map[string]string
 	Logger    *slog.Logger
+	Hybrid    HybridSearcher
 }
 
 type authToken struct {
@@ -44,6 +53,7 @@ type API struct {
 	auth      []authToken
 	logger    *slog.Logger
 	store     store.Repository
+	hybrid    HybridSearcher
 }
 
 type ingestRequest struct {
@@ -84,11 +94,16 @@ func New(cfg Config, repository store.Repository) http.Handler {
 	for name, secret := range cfg.Auth {
 		auth = append(auth, authToken{name: name, secretHash: sha256.Sum256([]byte(secret))})
 	}
+	hybrid := cfg.Hybrid
+	if isNilHybrid(hybrid) {
+		hybrid = nil
+	}
 	api := &API{
 		accountID: cfg.AccountID,
 		auth:      auth,
 		logger:    cfg.Logger,
 		store:     repository,
+		hybrid:    hybrid,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
@@ -98,6 +113,19 @@ func New(cfg Config, repository store.Repository) http.Handler {
 	return api.logRequests(api.recoverPanic(mux))
 }
 
+func isNilHybrid(searcher HybridSearcher) bool {
+	if searcher == nil {
+		return true
+	}
+	value := reflect.ValueOf(searcher)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -105,6 +133,13 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 		a.logger.Error("health check failed", "error", err)
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
+	}
+	if a.hybrid != nil {
+		if err := a.hybrid.Ping(ctx); err != nil {
+			a.logger.Error("health check failed", "component", "zvec", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "search index unavailable")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -152,6 +187,19 @@ func (a *API) ingest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "ingest failed")
 		return
 	}
+	if a.hybrid != nil {
+		if err := a.hybrid.Upsert(r.Context(), result.IndexEntries); err != nil {
+			a.logger.Error(
+				"zvec indexing failed",
+				"error", err,
+				"entry_count", len(result.IndexEntries),
+				"device_id", request.DeviceID,
+				"token_name", tokenName,
+			)
+			writeError(w, http.StatusServiceUnavailable, "search indexing failed; retry request")
+			return
+		}
+	}
 	a.logger.Info(
 		"ingest completed",
 		"event_count", len(events),
@@ -171,6 +219,7 @@ func (a *API) ingest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
+	searchStarted := time.Now()
 	limit, err := pageSize(r.URL.Query().Get("limit"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -181,20 +230,49 @@ func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "q must not exceed 256 characters")
 		return
 	}
+	mode, err := searchMode(r.URL.Query().Get("mode"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mode == store.EntrySearchFuzzy && utf8.RuneCountInString(query) < 3 {
+		writeError(w, http.StatusBadRequest, "fuzzy search requires q to contain at least 3 characters")
+		return
+	}
+	if mode == store.EntrySearchHybrid && strings.TrimSpace(query) == "" {
+		writeError(w, http.StatusBadRequest, "hybrid search requires a non-empty q")
+		return
+	}
 	cursor, err := decodeCursor(r.URL.Query().Get("cursor"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+	if cursor != nil && cursor.Mode != "" && cursor.Mode != mode {
+		writeError(w, http.StatusBadRequest, "cursor does not match search mode")
+		return
+	}
+	if mode == store.EntrySearchHybrid {
+		a.listHybridEntries(w, r, query, limit, cursor)
 		return
 	}
 
 	entries, err := a.store.ListEntries(r.Context(), store.ListEntriesParams{
 		AccountID: a.accountID,
 		Query:     query,
+		Mode:      mode,
 		Cursor:    cursor,
 		Limit:     limit + 1,
 	})
 	if err != nil {
-		a.logger.Error("list entries failed", "error", err)
+		a.logger.Error(
+			"entry search failed",
+			"search_mode", string(mode),
+			"search_backend", "postgres",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"error", err,
+		)
 		writeError(w, http.StatusInternalServerError, "list entries failed")
 		return
 	}
@@ -203,8 +281,126 @@ func (a *API) listEntries(w http.ResponseWriter, r *http.Request) {
 	if len(entries) > limit {
 		last := entries[limit-1]
 		response.Entries = entries[:limit]
-		response.NextCursor = encodeCursor(store.EntryCursor{LastCopiedAt: last.LastCopiedAt, ID: last.ID})
+		response.NextCursor = encodeCursor(store.EntryCursor{
+			LastCopiedAt: last.LastCopiedAt,
+			ID:           last.ID,
+			Mode:         mode,
+			Score:        last.Score,
+		})
 	}
+	searchDuration := time.Since(searchStarted)
+	a.logger.Info(
+		"entry search completed",
+		"search_mode", string(mode),
+		"search_backend", "postgres",
+		"query_chars", utf8.RuneCountInString(query),
+		"limit", limit,
+		"returned_count", len(response.Entries),
+		"has_next_cursor", response.NextCursor != "",
+		"search_duration_us", searchDuration.Microseconds(),
+		"search_duration_ms", durationMilliseconds(searchDuration),
+	)
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (a *API) listHybridEntries(
+	w http.ResponseWriter,
+	r *http.Request,
+	query string,
+	limit int,
+	cursor *store.EntryCursor,
+) {
+	if a.hybrid == nil {
+		a.logger.Warn(
+			"entry search unavailable",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "zvec",
+		)
+		writeError(w, http.StatusServiceUnavailable, "hybrid search is unavailable")
+		return
+	}
+	offset := 0
+	if cursor != nil {
+		offset = cursor.Offset
+	}
+	searchStarted := time.Now()
+	ranked, err := a.hybrid.Search(r.Context(), query, offset+limit+1)
+	searchDuration := time.Since(searchStarted)
+	if err != nil {
+		a.logger.Error(
+			"entry search failed",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "zvec",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"offset", offset,
+			"search_duration_us", searchDuration.Microseconds(),
+			"search_duration_ms", durationMilliseconds(searchDuration),
+			"error", err,
+		)
+		writeError(w, http.StatusServiceUnavailable, "hybrid search failed")
+		return
+	}
+	if offset >= len(ranked) {
+		a.logger.Info(
+			"entry search completed",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "zvec",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"offset", offset,
+			"candidate_count", len(ranked),
+			"returned_count", 0,
+			"has_next_cursor", false,
+			"search_duration_us", searchDuration.Microseconds(),
+			"search_duration_ms", durationMilliseconds(searchDuration),
+		)
+		writeJSON(w, http.StatusOK, entriesResponse{Entries: []store.Entry{}})
+		return
+	}
+	end := min(offset+limit, len(ranked))
+	hydrateStarted := time.Now()
+	entries, err := a.store.EntriesByRank(r.Context(), a.accountID, ranked[offset:end])
+	hydrateDuration := time.Since(hydrateStarted)
+	if err != nil {
+		a.logger.Error(
+			"entry search hydration failed",
+			"search_mode", string(store.EntrySearchHybrid),
+			"search_backend", "postgres",
+			"query_chars", utf8.RuneCountInString(query),
+			"limit", limit,
+			"offset", offset,
+			"candidate_count", len(ranked),
+			"hydrate_count", end-offset,
+			"hydrate_duration_us", hydrateDuration.Microseconds(),
+			"hydrate_duration_ms", durationMilliseconds(hydrateDuration),
+			"error", err,
+		)
+		writeError(w, http.StatusInternalServerError, "list entries failed")
+		return
+	}
+	response := entriesResponse{Entries: entries}
+	if len(ranked) > end && end <= maxHybridOffset {
+		response.NextCursor = encodeCursor(store.EntryCursor{
+			Mode:   store.EntrySearchHybrid,
+			Offset: end,
+		})
+	}
+	a.logger.Info(
+		"entry search completed",
+		"search_mode", string(store.EntrySearchHybrid),
+		"search_backend", "zvec+postgres",
+		"query_chars", utf8.RuneCountInString(query),
+		"limit", limit,
+		"offset", offset,
+		"candidate_count", len(ranked),
+		"returned_count", len(response.Entries),
+		"has_next_cursor", response.NextCursor != "",
+		"search_duration_us", searchDuration.Microseconds(),
+		"search_duration_ms", durationMilliseconds(searchDuration),
+		"hydrate_duration_us", hydrateDuration.Microseconds(),
+		"hydrate_duration_ms", durationMilliseconds(hydrateDuration),
+	)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -271,15 +467,26 @@ func (a *API) logRequests(next http.Handler) http.Handler {
 		recorder := &responseRecorder{ResponseWriter: w}
 		next.ServeHTTP(recorder, r)
 		duration := time.Since(started)
-		a.logger.Info(
-			"request",
+		fields := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", recorder.statusCode(),
 			"response_bytes", recorder.bytes,
 			"duration_us", duration.Microseconds(),
 			"duration_ms", durationMilliseconds(duration),
-		)
+		}
+		if r.URL.Path == "/v1/entries" {
+			mode, err := searchMode(r.URL.Query().Get("mode"))
+			if err != nil {
+				fields = append(fields, "search_mode", "invalid")
+			} else {
+				fields = append(fields,
+					"search_mode", string(mode),
+					"query_chars", utf8.RuneCountInString(r.URL.Query().Get("q")),
+				)
+			}
+		}
+		a.logger.Info("request", fields...)
 	})
 }
 
@@ -383,7 +590,16 @@ func pageSize(raw string) (int, error) {
 }
 
 func encodeCursor(cursor store.EntryCursor) string {
-	payload := cursor.LastCopiedAt.UTC().Format(time.RFC3339Nano) + "\n" + cursor.ID
+	mode := cursor.Mode
+	if mode == "" {
+		mode = store.EntrySearchContains
+	}
+	if mode == store.EntrySearchHybrid {
+		payload := "v3\n" + string(mode) + "\n" + strconv.Itoa(cursor.Offset)
+		return base64.RawURLEncoding.EncodeToString([]byte(payload))
+	}
+	payload := "v2\n" + string(mode) + "\n" + strconv.FormatFloat(float64(cursor.Score), 'g', -1, 32) + "\n" +
+		cursor.LastCopiedAt.UTC().Format(time.RFC3339Nano) + "\n" + cursor.ID
 	return base64.RawURLEncoding.EncodeToString([]byte(payload))
 }
 
@@ -395,15 +611,55 @@ func decodeCursor(raw string) (*store.EntryCursor, error) {
 	if err != nil {
 		return nil, err
 	}
-	parts := strings.SplitN(string(decoded), "\n", 2)
-	if len(parts) != 2 || parts[1] == "" {
+	parts := strings.Split(string(decoded), "\n")
+	if len(parts) == 3 && parts[0] == "v3" && parts[1] == string(store.EntrySearchHybrid) {
+		offset, err := strconv.Atoi(parts[2])
+		if err != nil || offset < 0 || offset > maxHybridOffset {
+			return nil, errors.New("malformed cursor")
+		}
+		return &store.EntryCursor{Mode: store.EntrySearchHybrid, Offset: offset}, nil
+	}
+	if len(parts) == 2 {
+		timestamp, err := time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil || parts[1] == "" {
+			return nil, errors.New("malformed cursor")
+		}
+		return &store.EntryCursor{LastCopiedAt: timestamp, ID: parts[1]}, nil
+	}
+	if len(parts) != 5 || parts[0] != "v2" || parts[1] == "" || parts[4] == "" {
 		return nil, errors.New("malformed cursor")
 	}
-	timestamp, err := time.Parse(time.RFC3339Nano, parts[0])
+	mode := store.EntrySearchMode(parts[1])
+	if mode != store.EntrySearchContains && mode != store.EntrySearchFuzzy {
+		return nil, errors.New("malformed cursor")
+	}
+	score, err := strconv.ParseFloat(parts[2], 32)
+	if err != nil {
+		return nil, errors.New("malformed cursor")
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, parts[3])
 	if err != nil {
 		return nil, err
 	}
-	return &store.EntryCursor{LastCopiedAt: timestamp, ID: parts[1]}, nil
+	return &store.EntryCursor{
+		LastCopiedAt: timestamp,
+		ID:           parts[4],
+		Mode:         mode,
+		Score:        float32(score),
+	}, nil
+}
+
+func searchMode(raw string) (store.EntrySearchMode, error) {
+	switch raw {
+	case "", string(store.EntrySearchContains):
+		return store.EntrySearchContains, nil
+	case string(store.EntrySearchFuzzy):
+		return store.EntrySearchFuzzy, nil
+	case string(store.EntrySearchHybrid):
+		return store.EntrySearchHybrid, nil
+	default:
+		return "", errors.New("mode must be contains, fuzzy, or hybrid")
+	}
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {

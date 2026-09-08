@@ -1,3 +1,7 @@
 .git
+.env
+.env.*
 config.yaml
 coverage.out
+node_modules
+.zvec

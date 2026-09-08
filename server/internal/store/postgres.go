@@ -61,16 +61,22 @@ func (p *Postgres) Ingest(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	result := IngestResult{}
+	indexEntries := make(map[string]IndexEntry, len(events))
 	for _, event := range events {
 		var existingSeq int64
+		var existingEntryID string
+		var existingPlainText string
 		err := tx.QueryRow(ctx, `
-			SELECT server_seq
-			FROM clipboard_events
-			WHERE account_id = $1 AND device_id = $2 AND client_event_id = $3
-		`, accountID, deviceID, event.ClientEventID).Scan(&existingSeq)
+			SELECT event.server_seq, entry.id, entry.plain_text
+			FROM clipboard_events AS event
+			JOIN clipboard_entries AS entry
+				ON entry.id = event.entry_id AND entry.account_id = event.account_id
+			WHERE event.account_id = $1 AND event.device_id = $2 AND event.client_event_id = $3
+		`, accountID, deviceID, event.ClientEventID).Scan(&existingSeq, &existingEntryID, &existingPlainText)
 		if err == nil {
 			result.Duplicates++
 			result.LastServerSeq = max(result.LastServerSeq, existingSeq)
+			indexEntries[existingEntryID] = IndexEntry{ID: existingEntryID, PlainText: existingPlainText}
 			continue
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -109,7 +115,18 @@ func (p *Postgres) Ingest(
 			RETURNING server_seq
 		`, eventID, accountID, tokenName, deviceID, event.ClientEventID, entryID, event.CopiedAt, event.SourceBundleID).Scan(&serverSeq)
 		if errors.Is(err, pgx.ErrNoRows) {
+			if err := tx.QueryRow(ctx, `
+				SELECT event.server_seq, entry.id, entry.plain_text
+				FROM clipboard_events AS event
+				JOIN clipboard_entries AS entry
+					ON entry.id = event.entry_id AND entry.account_id = event.account_id
+				WHERE event.account_id = $1 AND event.device_id = $2 AND event.client_event_id = $3
+			`, accountID, deviceID, event.ClientEventID).Scan(&serverSeq, &entryID, &event.PlainText); err != nil {
+				return IngestResult{}, fmt.Errorf("load concurrent event: %w", err)
+			}
 			result.Duplicates++
+			result.LastServerSeq = max(result.LastServerSeq, serverSeq)
+			indexEntries[entryID] = IndexEntry{ID: entryID, PlainText: event.PlainText}
 			continue
 		}
 		if err != nil {
@@ -129,28 +146,58 @@ func (p *Postgres) Ingest(
 
 		result.Accepted++
 		result.LastServerSeq = max(result.LastServerSeq, serverSeq)
+		indexEntries[entryID] = IndexEntry{ID: entryID, PlainText: event.PlainText}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return IngestResult{}, fmt.Errorf("commit ingest transaction: %w", err)
 	}
+	result.IndexEntries = make([]IndexEntry, 0, len(indexEntries))
+	for _, entry := range indexEntries {
+		result.IndexEntries = append(result.IndexEntries, entry)
+	}
 	return result, nil
 }
 
 func (p *Postgres) ListEntries(ctx context.Context, params ListEntriesParams) ([]Entry, error) {
+	mode := params.Mode
+	if mode == "" {
+		mode = EntrySearchContains
+	}
+
 	query := `
 		SELECT id, content_sha256, plain_text, text_bytes,
-			first_copied_at, last_copied_at, occurrence_count
+			first_copied_at, last_copied_at, occurrence_count,
+	`
+	args := []any{params.AccountID}
+	switch mode {
+	case EntrySearchContains:
+		query += `0::real AS search_score
 		FROM clipboard_entries
 		WHERE account_id = $1
 			AND ($2 = '' OR plain_text ILIKE '%' || $2 || '%' ESCAPE E'\\')
-	`
-	args := []any{params.AccountID, escapeLike(params.Query)}
-	if params.Cursor != nil {
-		query += ` AND (last_copied_at, id) < ($3, $4)`
-		args = append(args, params.Cursor.LastCopiedAt, params.Cursor.ID)
+		`
+		args = append(args, escapeLike(params.Query))
+		if params.Cursor != nil {
+			query += ` AND (last_copied_at, id) < ($3, $4)`
+			args = append(args, params.Cursor.LastCopiedAt, params.Cursor.ID)
+		}
+		query += fmt.Sprintf(" ORDER BY last_copied_at DESC, id DESC LIMIT $%d", len(args)+1)
+	case EntrySearchFuzzy:
+		query += `word_similarity($2, plain_text) AS search_score
+		FROM clipboard_entries
+		WHERE account_id = $1
+			AND $2 <% plain_text
+		`
+		args = append(args, params.Query)
+		if params.Cursor != nil {
+			query += ` AND (word_similarity($2, plain_text), last_copied_at, id) < ($3, $4, $5)`
+			args = append(args, params.Cursor.Score, params.Cursor.LastCopiedAt, params.Cursor.ID)
+		}
+		query += fmt.Sprintf(" ORDER BY word_similarity($2, plain_text) DESC, last_copied_at DESC, id DESC LIMIT $%d", len(args)+1)
+	default:
+		return nil, fmt.Errorf("unsupported entry search mode %q", mode)
 	}
-	query += fmt.Sprintf(" ORDER BY last_copied_at DESC, id DESC LIMIT $%d", len(args)+1)
 	args = append(args, params.Limit)
 
 	rows, err := p.pool.Query(ctx, query, args...)
@@ -189,6 +236,66 @@ func (p *Postgres) ListEvents(ctx context.Context, accountID string, afterSeq in
 		return nil, fmt.Errorf("scan clipboard events: %w", err)
 	}
 	return events, nil
+}
+
+func (p *Postgres) ListIndexEntries(ctx context.Context, accountID, afterID string, limit int) ([]IndexEntry, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, plain_text
+		FROM clipboard_entries
+		WHERE account_id = $1 AND id > $2
+		ORDER BY id
+		LIMIT $3
+	`, accountID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list entries for indexing: %w", err)
+	}
+	defer rows.Close()
+
+	entries, err := pgx.CollectRows(rows, pgx.RowToStructByName[IndexEntry])
+	if err != nil {
+		return nil, fmt.Errorf("scan entries for indexing: %w", err)
+	}
+	return entries, nil
+}
+
+func (p *Postgres) EntriesByRank(ctx context.Context, accountID string, ranked []RankedEntry) ([]Entry, error) {
+	if len(ranked) == 0 {
+		return []Entry{}, nil
+	}
+	ids := make([]string, len(ranked))
+	for index, entry := range ranked {
+		ids[index] = entry.ID
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, content_sha256, plain_text, text_bytes,
+			first_copied_at, last_copied_at, occurrence_count,
+			0::real AS search_score
+		FROM clipboard_entries
+		WHERE account_id = $1 AND id = ANY($2)
+	`, accountID, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get ranked clipboard entries: %w", err)
+	}
+	defer rows.Close()
+
+	entries, err := pgx.CollectRows(rows, pgx.RowToStructByName[Entry])
+	if err != nil {
+		return nil, fmt.Errorf("scan ranked clipboard entries: %w", err)
+	}
+	byID := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+	ordered := make([]Entry, 0, len(ranked))
+	for _, result := range ranked {
+		entry, ok := byID[result.ID]
+		if !ok {
+			continue
+		}
+		entry.Score = result.Score
+		ordered = append(ordered, entry)
+	}
+	return ordered, nil
 }
 
 func escapeLike(value string) string {

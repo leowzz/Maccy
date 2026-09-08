@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ['**']
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  release-tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: cp .env.example .env
+      - run: make version-check test-release
+
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: maccy
+          POSTGRES_PASSWORD: maccy-test
+          POSTGRES_DB: maccy_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U maccy -d maccy_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - run: make server-test
+        env:
+          MACCY_TEST_DATABASE_URL: postgres://maccy:maccy-test@localhost:5432/maccy_test?sslmode=disable
+      - run: go vet ./...
+        working-directory: server
+        env:
+          CGO_ENABLED: '0'
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: make build-release
