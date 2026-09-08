@@ -13,7 +13,8 @@ version declared in `server/go.mod`.
 cp .env.example .env  # once after cloning; do not overwrite existing local settings
 make build           # Debug app, /tmp/maccy-local-build/Maccy.app
 make build-release   # optimized app, dist/Maccy.app (the former make release)
-make package         # universal arm64 + x86_64 DMG and SHA-256 in dist/
+APPLE_SIGNING_IDENTITY="Axonkey Self-Signed Code Signing" make package
+                     # signed universal arm64 + x86_64 DMG and SHA-256 in dist/
 make version-check
 make test-release
 make server-test
@@ -21,7 +22,10 @@ make server-test
 
 Builds do not change the version, commit or tag. `make package` validates version
 agreement, verifies both executable architectures and the app's code signature,
-then verifies the generated DMG. Swift dependencies are recorded in
+signs the DMG with the same certificate, and checks both leaf certificates match.
+Checksums are generated after signing. `make package` requires a valid certificate
+identity in the keychain and rejects missing identities and `-` (ad-hoc signing).
+Local Debug and `build-release` builds still use ad-hoc signing. Swift dependencies are recorded in
 `Maccy.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
 
 ## Create a release
@@ -75,9 +79,33 @@ Enable GitHub Actions in the fork and add repository secrets
 `ALIYUN_REGISTRY_USERNAME` and `ALIYUN_REGISTRY_PASSWORD` with push access to that
 image repository (the same names used by Orbit). Missing credentials fail the
 image job. GitHub Release publication uses the workflow's `GITHUB_TOKEN`.
-App builds use ad-hoc signing and are **not
-Apple-notarized**, so Gatekeeper may block downloaded copies. Developer ID signing
-and notarization are not configured by this pipeline.
+
+### Self-signed macOS releases
+
+Configure the same application-signing secrets as Axonkey:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Base64-encoded PKCS#12 (`.p12`) containing the application certificate and private key |
+| `APPLE_CERTIFICATE_PASSWORD` | Password protecting that PKCS#12 file |
+| `APPLE_SIGNING_IDENTITY` | Exact identity name, for example `Axonkey Self-Signed Code Signing` |
+
+Reuse the existing certificate and private key across releases. The name alone
+does not preserve the signing identity if a new certificate is generated.
+Maccy ships an App inside a DMG, not a PKG, so Axonkey's separate
+`MACOS_INSTALLER_*` certificate is not needed.
+
+The tag workflow requires all three secrets. It imports the certificate into a
+temporary keychain, enables noninteractive `codesign` access, and trusts the
+self-signed root for code signing using `sudo -n security add-trusted-cert -d`
+on the ephemeral GitHub runner, as Axonkey does. The keychain is deleted even if
+the build fails. Certificate import is CI-only; local packaging uses an already
+installed identity and does not change system trust settings.
+
+Both App and DMG are certificate-signed. No fallback to ad-hoc signatures is
+allowed for a release. Self-signing is **not Apple notarization**: Gatekeeper
+may still block downloads on Macs that do not trust this certificate. This
+pipeline does not submit artifacts to Apple's notarization service.
 
 Swift UI/clipboard tests are not run on hosted runners because they depend on
 interactive desktop state and Accessibility permissions. Go tests requiring

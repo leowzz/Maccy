@@ -31,7 +31,24 @@ jobs:
         run: |
           cp .env.example .env
           python3 scripts/release.py check --version "$RELEASE_TAG"
-      - run: make package
+      - name: Import self-signed application certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: bash scripts/prepare-macos-signing.sh
+      - name: Build certificate-signed app and DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: make package
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/maccy-signing.keychain-db"
+          if [[ -f "$keychain" ]]; then
+            security delete-keychain "$keychain"
+          fi
+          rm -f "$RUNNER_TEMP/maccy-signing.p12" "$RUNNER_TEMP/maccy-signing.pem"
       - uses: actions/upload-artifact@v7
         with:
           name: macos-release
@@ -101,7 +118,7 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Universal macOS app for Apple Silicon and Intel, macOS 14 or newer.
 
-          This fork build is ad-hoc signed and is not Apple-notarized. Gatekeeper may block opening a downloaded copy. Install updates manually from this repository's Releases; this pipeline does not publish a Sparkle appcast.
+          The app and DMG are signed with our self-signed application certificate, not Apple-notarized. Gatekeeper may block opening a downloaded copy on Macs that do not trust this certificate. Install updates manually from this repository's Releases; this pipeline does not publish a Sparkle appcast.
           NOTES
           printf '\nBackend image (linux/amd64): registry.cn-heyuan.aliyuncs.com/leo03w/maccy-server:%s\n' "$RELEASE_TAG" >> release-notes.md
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
