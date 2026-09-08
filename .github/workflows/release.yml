@@ -88,6 +88,8 @@ jobs:
           context: ./server
           platforms: linux/amd64
           push: true
+          # Aliyun rejects the default provenance attestation manifest.
+          provenance: false
           tags: registry.cn-heyuan.aliyuncs.com/leo03w/maccy-server:${{ github.ref_name }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
