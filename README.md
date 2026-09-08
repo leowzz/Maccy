@@ -52,6 +52,9 @@ brew install maccy
 
 ## Usage
 
+For this fork's local builds and tag-driven GitHub releases, see
+[Build and release](docs/releasing.md).
+
 1. <kbd>SHIFT (⇧)</kbd> + <kbd>COMMAND (⌘)</kbd> + <kbd>C</kbd> to popup Maccy or click on its icon in the menu bar.
 2. Type what you want to find.
 3. To select the history item you wish to copy, press <kbd>ENTER</kbd>, or click the item, or use <kbd>COMMAND (⌘)</kbd> + `n` shortcut.

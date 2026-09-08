@@ -1,6 +1,11 @@
 xcuserdata/
-Maccy.xcodeproj/project.xcworkspace/xcshareddata
+Maccy.xcodeproj/project.xcworkspace/xcshareddata/*
+!Maccy.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+Maccy.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!Maccy.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 .idea
 .DS_Store
 Maccy/.DS_Store
 dist/
+/.env
+__pycache__/

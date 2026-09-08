@@ -25,7 +25,10 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   }
   var shortcuts: [KeyShortcut] = []
 
+  private(set) var isInvalidated = false
+
   var application: String? {
+    guard !isInvalidated else { return nil }
     if item.universalClipboard {
       return "iCloud"
     }
@@ -39,13 +42,13 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return url.deletingPathExtension().lastPathComponent
   }
 
-  var hasImage: Bool { item.image != nil }
+  var hasImage: Bool { !isInvalidated && item.image != nil }
 
   var previewImageGenerationTask: Task<(), Error>?
   var thumbnailImageGenerationTask: Task<(), Error>?
   var previewImage: NSImage?
   var previewText: String {
-    item.previewableText
+    isInvalidated ? title : item.previewableText
   }
   var thumbnailImage: NSImage?
   var applicationImage: ApplicationImage
@@ -53,8 +56,8 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   // 10k characters seems to be more than enough on large displays
   var text: String { previewText.shortened(to: 10_000) }
 
-  var isPinned: Bool { item.pin != nil }
-  var isUnpinned: Bool { item.pin == nil }
+  var isPinned: Bool { !isInvalidated && item.pin != nil }
+  var isUnpinned: Bool { !isPinned }
 
   func hash(into hasher: inout Hasher) {
     // We need to hash title and attributedTitle, so SwiftUI knows it needs to update the view if they chage
@@ -105,7 +108,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
 
   @MainActor
   func ensureThumbnailImage() {
-    guard item.image != nil else {
+    guard !isInvalidated, item.image != nil else {
       return
     }
     guard thumbnailImage == nil else {
@@ -115,13 +118,14 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
       return
     }
     thumbnailImageGenerationTask = Task { [weak self] in
+      guard !Task.isCancelled else { return }
       self?.generateThumbnailImage()
     }
   }
 
   @MainActor
   func ensurePreviewImage() {
-    guard item.image != nil else {
+    guard !isInvalidated, item.image != nil else {
       return
     }
     guard previewImage == nil else {
@@ -131,6 +135,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
       return
     }
     previewImageGenerationTask = Task { [weak self] in
+      guard !Task.isCancelled else { return }
       self?.generatePreviewImage()
     }
   }
@@ -145,6 +150,14 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return previewImage
   }
 
+  // SwiftUI can render a removed row again after its model has been deleted.
+  @MainActor
+  func invalidate() {
+    guard !isInvalidated else { return }
+    cleanupImages()
+    isInvalidated = true
+  }
+
   @MainActor
   func cleanupImages() {
     thumbnailImageGenerationTask?.cancel()
@@ -153,12 +166,16 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     previewImage?.recache()
     thumbnailImage = nil
     previewImage = nil
-    item.clearDecodedImageCache()
+    if !isInvalidated {
+      item.clearDecodedImageCache()
+    }
+    thumbnailImageGenerationTask = nil
+    previewImageGenerationTask = nil
   }
 
   @MainActor
   private func generateThumbnailImage() {
-    guard let image = item.image else {
+    guard !isInvalidated, let image = item.image else {
       return
     }
     thumbnailImage = image.resized(to: HistoryItemDecorator.thumbnailImageSize)
@@ -166,7 +183,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
 
   @MainActor
   private func generatePreviewImage() {
-    guard let image = item.image else {
+    guard !isInvalidated, let image = item.image else {
       return
     }
     previewImage = image.resized(to: HistoryItemDecorator.previewImageSize)
@@ -207,6 +224,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
 
   @MainActor
   func togglePin() {
+    guard !isInvalidated else { return }
     if item.pin != nil {
       item.pin = nil
     } else {
@@ -219,7 +237,8 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     _ = withObservationTracking {
       item.pin
     } onChange: {
-      DispatchQueue.main.async {
+      DispatchQueue.main.async { [weak self] in
+        guard let self, !self.isInvalidated else { return }
         if let pin = self.item.pin {
           self.shortcuts = KeyShortcut.create(character: pin)
         }
@@ -232,7 +251,8 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     _ = withObservationTracking {
       item.title
     } onChange: {
-      DispatchQueue.main.async {
+      DispatchQueue.main.async { [weak self] in
+        guard let self, !self.isInvalidated else { return }
         self.title = self.item.title
         self.synchronizeItemTitle()
       }

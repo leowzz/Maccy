@@ -7,12 +7,17 @@ BUILD_DIR ?= /tmp/maccy-local-build
 APP := $(BUILD_DIR)/Maccy.app
 RELEASE_DIR ?= $(CURDIR)/dist
 RELEASE_APP := $(RELEASE_DIR)/Maccy.app
+PYTHON ?= python3
+ENV_FILE ?= .env
 
-.PHONY: help build release run dev kill clean xcode server server-test
+.PHONY: help build release build-release package version-check test-release run dev kill clean xcode server server-test
 
 help:
 	@echo "make build       Build the macOS app"
-	@echo "make release     Build a local optimized Release app in ./dist"
+	@echo "make build-release Build an optimized Release app in ./dist"
+	@echo "make package     Build a universal macOS DMG and checksum"
+	@echo "make release     Bump patch, commit and tag (V=vX.Y.Z overrides; no push)"
+	@echo "make version-check / test-release  Validate version / release tooling"
 	@echo "make run         Build and launch the macOS app"
 	@echo "make dev         Alias for make run"
 	@echo "make kill        Stop all running Maccy instances"
@@ -34,6 +39,18 @@ build:
 		build
 
 release:
+	@$(PYTHON) scripts/release.py release --env-file "$(ENV_FILE)" --version "$(V)"
+
+version-check:
+	@$(PYTHON) scripts/release.py check --env-file "$(ENV_FILE)" --version "$(V)"
+
+test-release:
+	@$(PYTHON) -m unittest discover -s tests -p 'test_release.py'
+
+package: version-check
+	@ENV_FILE="$(ENV_FILE)" RELEASE_DIR="$(RELEASE_DIR)" PYTHON="$(PYTHON)" bash scripts/package-macos.sh
+
+build-release:
 	@mkdir -p $(RELEASE_DIR)
 	xcodebuild \
 		-project $(PROJECT) \
