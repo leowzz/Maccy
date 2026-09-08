@@ -16,7 +16,19 @@ class ReleaseTest(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.env = self.root / ".env"
         (self.root / release.PROJECT).parent.mkdir()
-        (self.root / release.PROJECT).write_text((release.ROOT / release.PROJECT).read_text())
+        # Keep the fixture independent of the repository's current release version.
+        (self.root / release.PROJECT).write_text(
+            "{\n"
+            "\tDebug = {\n"
+            "\t\tMARKETING_VERSION = 2.7.1;\n"
+            "\t\tCURRENT_PROJECT_VERSION = 62;\n"
+            "\t};\n"
+            "\tRelease = {\n"
+            "\t\tMARKETING_VERSION = 2.7.1;\n"
+            "\t\tCURRENT_PROJECT_VERSION = 62;\n"
+            "\t};\n"
+            "}\n"
+        )
         (self.root / ".env.example").write_text("version=v2.7.1\n")
         self.env.write_text("# previous version=v2.7.1\nOTHER=keep\nversion=v2.7.1\n")
         (self.root / ".gitignore").write_text(".env\n")

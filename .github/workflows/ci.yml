@@ -51,7 +51,8 @@ jobs:
           CGO_ENABLED: '0'
 
   macos:
-    runs-on: macos-15
+    # Run Xcode 26 asset tools on macOS 26 to avoid AssetCatalogAgent crashes.
+    runs-on: macos-26
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
